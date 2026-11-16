@@ -1,114 +1,200 @@
 import streamlit as st
+import requests
+import json
+from datetime import datetime
+from fpdf import FPDF
 
 st.set_page_config(page_title="Inspector Termográfico", page_icon="🌡️", layout="centered")
 
-st.title("Inspector Termográfico")
-st.caption("ASISTENTE PREDICTIVO SAP PM")
+def enviar_a_sharepoint(datos):
+    webhook_url = st.secrets["WEBHOOK_URL"]
+    try:
+        response = requests.post(
+            webhook_url,
+            data=json.dumps(datos),
+            headers={'Content-Type': 'application/json'}
+        )
+        response.raise_for_status()
+        return True
+    except Exception as e:
+        st.error(f"Error de conexión: {e}")
+        return False
 
-# 1. Mediciones Base
-st.subheader("1. Mediciones Base")
+st.title("Inspector Termográfico")
+st.caption("ASISTENTE PREDICTIVO SAP PM - CMPC")
+
+# 0. Datos de Registro
+st.subheader("0. Identificación del Equipo")
+tag_equipo = st.text_input("TAG de Equipo (Solo números)", placeholder="Ej: 3001")
+
+tag_is_valid = True
+if tag_equipo and not tag_equipo.isdigit():
+    st.error("El TAG del equipo debe ser numérico. Revisa el valor ingresado.")
+    tag_is_valid = False
+
+# 1. Ingreso de Datos
+st.markdown("---")
+st.subheader("1. Parámetros de Inspección")
 col1, col2 = st.columns(2)
 with col1:
     t_amb = st.number_input("T. Ambiente (°C)", value=None, format="%.1f")
+    i_nom = st.number_input("Corriente Nominal (A)", value=None, min_value=0.1, format="%.1f")
 with col2:
     t_max = st.number_input("T. Máx Conexión (°C)", value=None, format="%.1f")
+    i_med = st.number_input("Corriente Medida (A)", value=None, min_value=0.1, format="%.1f")
 
-if t_amb is not None and t_max is not None:
-    delta_t = round(t_max - t_amb, 1)
+# Función PDF
+def generar_pdf(tag, texto_sap):
+    pdf = FPDF()
+    pdf.add_page()
+    safe_text = texto_sap.replace("Δ", "Delta ").replace("°", " grados ")
     
-    # Mostrar Delta T
-    if delta_t >= 15:
-        st.error(f"**Delta T (ΔT): {delta_t} °C**")
-    else:
-        st.success(f"**Delta T (ΔT): {delta_t} °C**")
+    pdf.set_font("helvetica", style="B", size=16)
+    pdf.cell(0, 10, "INFORME TERMOGRAFICO PREDICTIVO", ln=True, align="C")
+    
+    pdf.set_font("helvetica", size=10)
+    pdf.cell(0, 10, f"Fecha: {datetime.now().strftime('%Y-%m-%d %H:%M')}", ln=True, align="R")
+    
+    pdf.set_font("helvetica", style="B", size=12)
+    pdf.cell(0, 8, f"Ubicacion Tecnica (TAG): {tag if tag else 'NO ESPECIFICADO'}", ln=True)
+    pdf.ln(5)
+    
+    pdf.set_font("helvetica", size=11)
+    for line in safe_text.split('\n'):
+        pdf.multi_cell(0, 7, txt=line)
+        
+    return bytes(pdf.output())
 
-    # Condición de disparo para medir corriente
-    needs_current = (t_max >= 45) or (delta_t >= 15)
+if tag_is_valid and t_amb is not None and t_max is not None and i_nom is not None and i_med is not None and i_nom > 0 and i_med > 0:
+    delta_t = round(t_max - t_amb, 1)
+    carga = round((i_med / i_nom) * 100, 1)
 
+    st.markdown("---")
+    st.subheader("2. Análisis de Severidad")
+    
+    col_m1, col_m2, col_m3 = st.columns(3)
+    col_m1.metric("ΔT Medido", f"{delta_t} °C")
+    col_m2.metric("% Carga Actual", f"{carga}%")
+
+    is_nok = False
+    nok_reasons = []
+    priority = ''
+    delta_t_100_str = "N/A"
+    delta_t_100_json = "N/A"
     status = 'IDLE'
     status_msg = ''
-    sap_text = ''
-    
-    if not needs_current:
-        status = 'OK'
-        status_msg = 'Tablero dentro de parámetros normales. No requiere medición de corriente.'
+
+    # GATEKEEPER
+    if carga < 30:
+        col_m3.metric("ΔT Proyectado (100%)", "Inválido (<30% Carga)")
+        if delta_t >= 15 or t_max >= 50:
+            is_nok = True
+            priority = 'CRÍTICA (Falla severa en vacío)'
+            if delta_t >= 15: nok_reasons.append(f'ΔT excesivo para baja carga ({delta_t}°C)')
+            if t_max >= 50: nok_reasons.append(f'T_máx anormal en vacío ({t_max}°C)')
+        else:
+            status = 'WARNING'
+            status_msg = 'Carga insuficiente (<30%). No hay flujo de electrones necesario para manifestar resistencia de contacto.'
+            priority = 'INCONCLUSO (Reevaluar en régimen)'
     else:
-        st.warning("⚠️ Umbral preventivo superado (T_máx ≥ 45°C o ΔT ≥ 15°C). Requiere medir corriente para evaluar severidad.")
+        delta_t_100_val = round(delta_t * ((i_nom / i_med) ** 1.6), 1)
+        delta_t_100_str = f"{delta_t_100_val} °C"
+        delta_t_100_json = delta_t_100_val
+        col_m3.metric("ΔT Proyectado", delta_t_100_str)
+
+        if delta_t_100_val >= 25 or t_max >= 60:
+            is_nok = True
+            priority = 'URGENTE (Intervenir en parada)'
+            if delta_t_100_val >= 25: nok_reasons.append(f'ΔT Proyectado ≥ 25°C ({delta_t_100_val}°C)')
+            if t_max >= 60: nok_reasons.append(f'T_máx crítica ({t_max}°C)')
+        elif delta_t_100_val >= 18 or t_max >= 48:
+            is_nok = True
+            priority = 'ALTA (< 7 días)'
+            if delta_t_100_val >= 18: nok_reasons.append(f'ΔT Proyectado ≥ 18°C ({delta_t_100_val}°C)')
+            if t_max >= 48: nok_reasons.append(f'T_máx alta ({t_max}°C)')
+        elif delta_t_100_val >= 12:
+            is_nok = True
+            priority = 'MEDIA (Monitorear)'
+            if delta_t_100_val >= 12: nok_reasons.append(f'ΔT Proyectado ≥ 12°C ({delta_t_100_val}°C)')
+        else:
+            priority = 'NORMAL'
+
+    if is_nok:
+        status = 'NOK'
+        status_msg = 'Anomalía Térmica Confirmada por matriz de severidad.'
+    elif status != 'WARNING':
+        status = 'OK'
+        status_msg = 'Calentamiento acorde al nivel de carga real. Operación dentro de tolerancia.'
+
+    sap_text = f"""[AVISO M2 - TERMOGRAFÍA]
+EQUIPO (TAG): {tag_equipo if tag_equipo else 'N/A'}
+
+ESTADO: {status}
+PRIORIDAD: {priority}
+
+MEDICIONES:
+- T. Máxima: {t_max} °C
+- T. Ambiente: {t_amb} °C
+
+ANÁLISIS DE CARGA:
+- Carga Actual: {carga}%
+- ΔT Medido: {delta_t} °C
+- ΔT Proyectado (100%): {delta_t_100_str}
+
+DIAGNÓSTICO:
+{status_msg}
+MOTIVOS: {', '.join(nok_reasons) if nok_reasons else 'Ninguno'}"""
+
+    st.markdown("---")
+    if status == 'OK':
+        st.success(f"**ESTADO: {status}**\n\n{status_msg}")
+    elif status == 'NOK':
+        st.error(f"**ESTADO: {status}**\n\n{status_msg}")
+    elif status == 'WARNING':
+        st.warning(f"**ESTADO: {status}**\n\n{status_msg}")
         
-        # 2. Análisis de Carga Requerido
-        st.subheader("2. Análisis de Carga Requerido")
-        col3, col4 = st.columns(2)
-        with col3:
-            i_nom = st.number_input("Corriente Nominal (A)", value=None, min_value=0.1, format="%.1f")
-        with col4:
-            i_med = st.number_input("Corriente Medida (A)", value=None, min_value=0.1, format="%.1f")
-            
-        asimetria = st.number_input("Asimetría entre Fases (°C) (Opcional)", value=None, format="%.1f")
-        asim_val = asimetria if asimetria is not None else 0.0
-
-        if i_nom is not None and i_med is not None and i_nom > 0 and i_med > 0:
-            carga = round((i_med / i_nom) * 100, 1)
-            delta_t_100 = round(delta_t * ((i_nom / i_med) ** 1.6), 1)
-
-            st.markdown("---")
-            col_m1, col_m2 = st.columns(2)
-            col_m1.metric("% Carga Actual", f"{carga}%")
-            col_m2.metric("ΔT Proyectado (100%)", f"{delta_t_100} °C")
-
-            # Matriz de Decisión
-            is_nok = False
-            nok_reasons = []
-            priority = ''
-            c = carga
-            dt = delta_t
-
-            if c >= 80:
-                if dt >= 25: is_nok = True; nok_reasons.append('ΔT ≥ 25°C')
-                if t_max >= 60: is_nok = True; nok_reasons.append('T_máx ≥ 60°C')
-                if asim_val >= 15: is_nok = True; nok_reasons.append('Asimetría ≥ 15°C')
-                priority = 'URGENTE (Intervenir en parada)'
-            elif c >= 60:
-                if dt >= 18: is_nok = True; nok_reasons.append('ΔT ≥ 18°C')
-                if t_max >= 48: is_nok = True; nok_reasons.append('T_máx ≥ 48°C')
-                if asim_val >= 10: is_nok = True; nok_reasons.append('Asimetría ≥ 10°C')
-                priority = 'ALTA (< 7 días)'
-            elif c >= 40:
-                if dt >= 12: is_nok = True; nok_reasons.append('ΔT ≥ 12°C')
-                if t_max >= 39: is_nok = True; nok_reasons.append('T_máx ≥ 39°C')
-                if asim_val >= 6: is_nok = True; nok_reasons.append('Asimetría ≥ 6°C')
-                priority = 'ALTA (Peligro al subir carga)'
-            elif c >= 20:
-                if dt >= 7: is_nok = True; nok_reasons.append('ΔT ≥ 7°C')
-                if t_max >= 32: is_nok = True; nok_reasons.append('T_máx ≥ 32°C')
-                if asim_val >= 3: is_nok = True; nok_reasons.append('Asimetría ≥ 3°C')
-                priority = 'INMEDIATA (Falso contacto activo)'
+    st.caption("Texto estandarizado para SAP PM (Aviso M2)")
+    st.code(sap_text, language="text")
+    
+    # 3. Acciones de Registro
+    st.markdown("---")
+    st.subheader("3. Acciones de Registro")
+    
+    col_btn1, col_btn2 = st.columns(2)
+    
+    with col_btn1:
+        if st.button("☁️ Enviar a SharePoint", use_container_width=True):
+            if not tag_equipo:
+                st.error("Falta ingresar el TAG de Equipo (Sección 0).")
             else:
-                if t_max >= 30: is_nok = True; nok_reasons.append('T_máx ≥ 30°C en vacío')
-                if asim_val >= 2: is_nok = True; nok_reasons.append('Asimetría ≥ 2°C en vacío')
-                priority = 'CRÍTICA (Evaluar con carga)'
-
-            if is_nok:
-                status = 'NOK'
-                status_msg = f"Anomalía Térmica Detectada. Prioridad: {priority}."
-            else:
-                status = 'OK'
-                status_msg = 'Calentamiento acorde al nivel de carga. Operación normalizada.'
+                datos_json = {
+                    'Timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    'TAG_Equipo': int(tag_equipo),
+                    'T_Amb': t_amb,
+                    'T_Max': t_max,
+                    'I_Nom': i_nom,
+                    'I_Med': i_med,
+                    'Carga_Pct': carga,
+                    'Delta_T_Medido': delta_t,
+                    'Delta_T_100': delta_t_100_json,
+                    'Estado': status
+                }
                 
-            # Renderizado de SAP Text
-            if status == 'OK':
-                sap_text = f"ESTADO: OK | T_max: {t_max}°C | T_amb: {t_amb}°C | DeltaT: {delta_t}°C | Operación Normal."
-            elif status == 'NOK':
-                sap_text = f"ESTADO: NOK | T_max: {t_max}°C | T_amb: {t_amb}°C | Carga: {carga}% | DeltaT: {delta_t}°C (Proyectado 100%: {delta_t_100}°C) | Motivo: {', '.join(nok_reasons)} | Prioridad: {priority}"
+                with st.spinner("Enviando a SharePoint..."):
+                    if enviar_a_sharepoint(datos_json):
+                        st.success("✅ Registro ingresado exitosamente en SharePoint.")
 
-    # 3. Status / Output
-    if status != 'IDLE':
-        st.markdown("---")
-        if status == 'OK':
-            st.success(f"**ESTADO: {status}**\n\n{status_msg}")
-        elif status == 'NOK':
-            st.error(f"**ESTADO: {status}**\n\n{status_msg}")
-            
-        if sap_text:
-            st.caption("Texto estandarizado para SAP PM (Aviso M2)")
-            # st.code incluye un botón nativo de copia al portapapeles en la esquina superior derecha
-            st.code(sap_text, language=None)
+    with col_btn2:
+        pdf_bytes = generar_pdf(tag_equipo, sap_text)
+        fecha_str = datetime.now().strftime('%Y%m%d_%H%M')
+        nombre_pdf = f"Termografia_TAG{tag_equipo if tag_equipo else 'N-A'}_{fecha_str}.pdf"
+        
+        st.download_button(
+            label="📄 Descargar Reporte PDF",
+            data=pdf_bytes,
+            file_name=nombre_pdf,
+            mime="application/pdf",
+            type="primary",
+            use_container_width=True
+                                           )
+        
