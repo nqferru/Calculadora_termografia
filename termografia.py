@@ -47,7 +47,12 @@ with col2:
 def generar_pdf(tag, texto_sap):
     pdf = FPDF()
     pdf.add_page()
-    safe_text = texto_sap.replace("Δ", "Delta ").replace("°", " grados ")
+    
+    # 1. Reemplazos semánticos legibles
+    safe_text = texto_sap.replace("Δ", "Delta ").replace("°", " grados ").replace("≥", ">=")
+    
+    # 2. Blindaje de codificación (fuerza latin-1, reemplaza caracteres extraños con '?')
+    safe_text = safe_text.encode('latin-1', 'replace').decode('latin-1')
     
     pdf.set_font("helvetica", style="B", size=16)
     pdf.cell(0, 10, "INFORME TERMOGRAFICO PREDICTIVO", ln=True, align="C")
@@ -63,6 +68,7 @@ def generar_pdf(tag, texto_sap):
     pdf.multi_cell(0, 7, text=safe_text)
         
     return bytes(pdf.output())
+    
 
 # CONDICIÓN DE EJECUCIÓN DEL ANÁLISIS
 if tag_is_valid and t_amb is not None and t_max is not None and i_nom is not None and i_med is not None and i_nom > 0 and i_med > 0:
