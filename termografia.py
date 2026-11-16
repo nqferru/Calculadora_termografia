@@ -7,7 +7,7 @@ from fpdf import FPDF
 st.set_page_config(page_title="Inspector Termográfico", page_icon="🌡️", layout="centered")
 
 def enviar_a_sharepoint(datos):
-    webhook_url = st.secrets["WEBHOOK_URL"]
+    webhook_url = st.secrets["https://9428a89fac44ef56ae14c5ae32fa11.e4.environment.api.powerplatform.com:443/powerautomate/automations/direct/cu/17/workflows/cb943a59cb2045b292ddc86e2dd36769/triggers/manual/paths/invoke?api-version=1"]
     try:
         response = requests.post(
             webhook_url,
