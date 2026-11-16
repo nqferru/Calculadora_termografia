@@ -47,7 +47,6 @@ with col2:
 def generar_pdf(tag, texto_sap):
     pdf = FPDF()
     pdf.add_page()
-    # Limpieza de caracteres especiales
     safe_text = texto_sap.replace("Δ", "Delta ").replace("°", " grados ")
     
     pdf.set_font("helvetica", style="B", size=16)
@@ -61,14 +60,30 @@ def generar_pdf(tag, texto_sap):
     pdf.ln(5)
     
     pdf.set_font("helvetica", size=11)
-    
-    # Se pasa el bloque completo de texto sin for loops
     pdf.multi_cell(0, 7, text=safe_text)
         
     return bytes(pdf.output())
-    
 
-    # GATEKEEPER
+# CONDICIÓN DE EJECUCIÓN DEL ANÁLISIS
+if tag_is_valid and t_amb is not None and t_max is not None and i_nom is not None and i_med is not None and i_nom > 0 and i_med > 0:
+    delta_t = round(t_max - t_amb, 1)
+    carga = round((i_med / i_nom) * 100, 1)
+
+    st.markdown("---")
+    st.subheader("2. Análisis de Severidad")
+    
+    col_m1, col_m2, col_m3 = st.columns(3)
+    col_m1.metric("ΔT Medido", f"{delta_t} °C")
+    col_m2.metric("% Carga Actual", f"{carga}%")
+
+    is_nok = False
+    nok_reasons = []
+    priority = ''
+    delta_t_100_str = "N/A"
+    delta_t_100_json = "N/A"
+    status = 'IDLE'
+    status_msg = ''
+
     if carga < 30:
         col_m3.metric("ΔT Proyectado (100%)", "Inválido (<30% Carga)")
         if delta_t >= 15 or t_max >= 50:
@@ -140,7 +155,6 @@ MOTIVOS: {', '.join(nok_reasons) if nok_reasons else 'Ninguno'}"""
     st.caption("Texto estandarizado para SAP PM (Aviso M2)")
     st.code(sap_text, language="text")
     
-    # 3. Acciones de Registro
     st.markdown("---")
     st.subheader("3. Acciones de Registro")
     
@@ -180,5 +194,4 @@ MOTIVOS: {', '.join(nok_reasons) if nok_reasons else 'Ninguno'}"""
             mime="application/pdf",
             type="primary",
             use_container_width=True
-                                           )
-        
+    )
